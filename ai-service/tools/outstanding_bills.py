@@ -6,7 +6,10 @@ Includes overdue logic based on real business rules:
   CASH   → overdue immediately if unpaid
   CREDIT → overdue after 45 days with no cheque received
 """
-from db.database import query
+# from db.database import query
+import httpx
+from auth import get_token
+from config import FINANCE_API_BASE_URL
 
 
 def outstanding_bills(
@@ -28,83 +31,119 @@ def outstanding_bills(
         customer     : Fuzzy search on customer name
         overdue_only : If True, only return overdue bills
     """
-    conditions = ["1=1"]
+    # conditions = ["1=1"]
     params = {}
 
     if business:
-        conditions.append("business = :business")
-        params["business"] = business.upper()
+        params["business"] = business
 
     if area:
-        conditions.append("area ILIKE :area")
-        params["area"] = f"%{area}%"
+        params["area"] = area
 
     if tier:
-        conditions.append("tier ILIKE :tier")
-        params["tier"] = f"%{tier}%"
+        params["tier"] = tier
 
     if min_days:
-        conditions.append("days_since_bill >= :min_days")
         params["min_days"] = min_days
 
     if customer:
-        conditions.append("customer_name ILIKE :customer")
-        params["customer"] = f"%{customer}%"
+        params["customer"] = customer
 
     if overdue_only:
-        conditions.append("is_overdue = TRUE")
+        params["overdueOnly"] = True
 
-    where_clause = " AND ".join(conditions)
+    # where_clause = " AND ".join(conditions)
 
-    sql = f"""
-        SELECT
-            bill_id,
-            bill_number,
-            customer_name,
-            phone,
-            area,
-            tier,
-            shop_type,
-            business,
-            bill_type,
-            bill_date,
-            total_amount,
-            amount_paid,
-            balance_remaining,
-            status,
-            days_since_bill,
-            is_overdue,
-            overdue_reason,
-            days_overdue
-        FROM outstanding_bills_view
-        WHERE {where_clause}
-        ORDER BY
-            -- Overdue bills first
-            is_overdue DESC,
-            -- Then by overdue reason severity
-            CASE overdue_reason
-                WHEN 'CHEQUE BOUNCED'       THEN 1
-                WHEN 'CASH UNPAID'          THEN 2
-                WHEN 'NO CHEQUE RECEIVED'   THEN 3
-                ELSE 4
-            END,
-            -- Then by tier
-            CASE tier
-                WHEN 'Platinum'         THEN 1
-                WHEN 'Gold'             THEN 2
-                WHEN 'Silver'           THEN 3
-                WHEN 'Bronze'           THEN 4
-                WHEN 'Emergency Top-up' THEN 5
-                ELSE 6
-            END,
-            days_overdue DESC
-    """
+    # sql = f"""
+    #     SELECT
+    #         bill_id,
+    #         bill_number,
+    #         customer_name,
+    #         phone,
+    #         area,
+    #         tier,
+    #         shop_type,
+    #         business,
+    #         bill_type,
+    #         bill_date,
+    #         total_amount,
+    #         amount_paid,
+    #         balance_remaining,
+    #         status,
+    #         days_since_bill,
+    #         is_overdue,
+    #         overdue_reason,
+    #         days_overdue
+    #     FROM outstanding_bills_view
+    #     WHERE {where_clause}
+    #     ORDER BY
+    #         -- Overdue bills first
+    #         is_overdue DESC,
+    #         -- Then by overdue reason severity
+    #         CASE overdue_reason
+    #             WHEN 'CHEQUE BOUNCED'       THEN 1
+    #             WHEN 'CASH UNPAID'          THEN 2
+    #             WHEN 'NO CHEQUE RECEIVED'   THEN 3
+    #             ELSE 4
+    #         END,
+    #         -- Then by tier
+    #         CASE tier
+    #             WHEN 'Platinum'         THEN 1
+    #             WHEN 'Gold'             THEN 2
+    #             WHEN 'Silver'           THEN 3
+    #             WHEN 'Bronze'           THEN 4
+    #             WHEN 'Emergency Top-up' THEN 5
+    #             ELSE 6
+    #         END,
+    #         days_overdue DESC
+    # """
 
-    rows = query(sql, params)
+    # rows = query(sql, params)
 
-    # Serialize dates
-    for row in rows:
-        if row.get("bill_date"):
-            row["bill_date"] = str(row["bill_date"])
+    # # Serialize dates
+    # for row in rows:
+    #     if row.get("bill_date"):
+    #         row["bill_date"] = str(row["bill_date"])
 
-    return rows
+    # return rows
+
+    try:
+        response = httpx.get(
+            f"{FINANCE_API_BASE_URL}/copilot/bills/outstanding",
+            params=params,
+            headers={"Authorization": f"Bearer {get_token()}"},
+            timeout=10.0
+        )
+        response.raise_for_status()
+        data = response.json()
+
+        return [
+            {
+                "bill_id":           item.get("billId"),
+                "bill_number":       item.get("billNumber"),
+                "customer_name":     item.get("customerName"),
+                "phone":             item.get("phone"),
+                "area":              item.get("area"),
+                "tier":              item.get("tier"),
+                "shop_type":         item.get("shopType"),
+                "business":          item.get("business"),
+                "bill_type":         item.get("billType"),
+                "bill_date":         item.get("billDate"),
+                "total_amount":      item.get("totalAmount"),
+                "amount_paid":       item.get("amountPaid"),
+                "balance_remaining": item.get("balanceRemaining"),
+                "status":            item.get("status"),
+                "days_since_bill":   item.get("daysSinceBill"),
+                "is_overdue":        item.get("isOverdue"),
+                "overdue_reason":    item.get("overdueReason"),
+                "days_overdue":      item.get("daysOverdue"),
+            }
+            for item in data
+        ]
+
+    except httpx.HTTPStatusError as e:
+        return {"error": f"FMS API error: {e.response.status_code}"}
+    except httpx.TimeoutException:
+        return {"error": "FMS API timeout"}
+    except Exception as e:
+        return {"error": str(e)}

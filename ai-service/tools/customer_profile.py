@@ -4,7 +4,9 @@ Returns everything about a specific customer.
 Answers: "Tell me everything about Janalanka Textile"
          "What does VISVAMS owe us?"
 """
-from db.database import query, query_one
+import httpx
+from auth import get_token
+from config import FINANCE_API_BASE_URL
 
 
 def customer_profile(name: str) -> dict:
@@ -15,120 +17,92 @@ def customer_profile(name: str) -> dict:
     Args:
         name: Customer name — fuzzy matched
     """
+    try:
+        response = httpx.get(
+            f"{FINANCE_API_BASE_URL}/copilot/customers/profile",
+            params={"name": name},
+            headers={"Authorization": f"Bearer {get_token()}"},
+            timeout=10.0
+        )
+        response.raise_for_status()
+        data = response.json()
 
-    # Step 1 — Find the customer
-    customer = query_one("""
-        SELECT
-            id,
-            name,
-            phone,
-            area,
-            tier,
-            shop_type,
-            active
-        FROM customers
-        WHERE name ILIKE :name
-        LIMIT 1
-    """, {"name": f"%{name}%"})
+        # Map customer fields
+        customer = data.get("customer", {})
+        summary  = data.get("summary", {})
 
-    if not customer:
-        return {"error": f"Customer '{name}' not found"}
+        # Map unpaid bills
+        unpaid_bills = [
+            {
+                "bill_id":           bill.get("billId"),
+                "bill_number":       bill.get("billNumber"),
+                "business":          bill.get("business"),
+                "bill_type":         bill.get("billType"),
+                "bill_date":         bill.get("billDate"),
+                "total_amount":      bill.get("totalAmount"),
+                "amount_paid":       bill.get("amountPaid"),
+                "balance_remaining": bill.get("balanceRemaining"),
+                "status":            bill.get("status"),
+                "days_since_bill":   bill.get("daysSinceBill"),
+                "is_overdue":        bill.get("isOverdue"),
+                "overdue_reason":    bill.get("overdueReason"),
+                "days_overdue":      bill.get("daysOverdue"),
+            }
+            for bill in data.get("unpaidBills", [])
+        ]
 
-    customer_id = customer["id"]
-    customer_name = customer["name"]
+        # Map payment history
+        payment_history = [
+            {
+                "payment_id":    payment.get("paymentId"),
+                "bill_number":   payment.get("billNumber"),
+                "amount":        payment.get("amount"),
+                "payment_type":  payment.get("paymentType"),
+                "status":        payment.get("status"),
+                "payment_date":  payment.get("paymentDate"),
+                "cheque_number": payment.get("chequeNumber"),
+                "bank_name":     payment.get("bankName"),
+                "return_reason": payment.get("returnReason"),
+            }
+            for payment in data.get("paymentHistory", [])
+        ]
 
-    # Step 2 — Get all unpaid bills
-    unpaid_bills = query("""
-        SELECT
-            bill_id,
-            bill_number,
-            business,
-            bill_date,
-            total_amount,
-            amount_paid,
-            balance_remaining,
-            status,
-            days_since_bill
-        FROM outstanding_bills_view
-        WHERE customer_name ILIKE :name
-        ORDER BY days_since_bill DESC
-    """, {"name": f"%{customer_name}%"})
+        # Map reminders
+        reminders = [
+            {
+                "reminder_date": reminder.get("reminderDate"),
+                "note":          reminder.get("note"),
+                "created_by":    reminder.get("createdBy"),
+                "bill_number":   reminder.get("billNumber"),
+            }
+            for reminder in data.get("reminders", [])
+        ]
 
-    # Step 3 — Get payment history
-    payment_history = query("""
-        SELECT
-            p.id            AS payment_id,
-            b.bill_number,
-            p.amount,
-            p.payment_type,
-            p.status,
-            p.payment_date,
-            p.cheque_number,
-            p.bank_name,
-            p.return_reason
-        FROM payments p
-        JOIN bills b ON p.bill_id = b.id
-        WHERE b.customer_id = :customer_id
-           OR b.customer_name ILIKE :name
-        ORDER BY p.payment_date DESC
-        LIMIT 20
-    """, {"customer_id": customer_id, "name": f"%{customer_name}%"})
+        return {
+            "customer": {
+                "name":      customer.get("name"),
+                "phone":     customer.get("phone"),
+                "area":      customer.get("area"),
+                "tier":      customer.get("tier"),
+                "shop_type": customer.get("shopType"),
+                "active":    customer.get("active"),
+            },
+            "summary": {
+                "unpaid_bill_count":  summary.get("unpaidBillCount"),
+                "total_outstanding":  float(summary.get("totalOutstanding") or 0),
+                "oldest_unpaid_days": summary.get("oldestUnpaidDays"),
+                "oldest_bill_date":   summary.get("oldestBillDate"),
+            },
+            "unpaid_bills":    unpaid_bills,
+            "payment_history": payment_history,
+            "reminders":       reminders
+        }
 
-    # Step 4 — Get total outstanding
-    summary = query_one("""
-        SELECT
-            COUNT(*)                    AS unpaid_bill_count,
-            SUM(balance_remaining)      AS total_outstanding,
-            MAX(days_since_bill)        AS oldest_unpaid_days,
-            MIN(bill_date)              AS oldest_bill_date
-        FROM outstanding_bills_view
-        WHERE customer_name ILIKE :name
-    """, {"name": f"%{customer_name}%"})
-
-    # Step 5 — Get active reminders
-    reminders = query("""
-        SELECT
-            r.reminder_date,
-            r.note,
-            r.created_by,
-            b.bill_number
-        FROM bill_reminders r
-        JOIN bills b ON r.bill_id = b.id
-        WHERE (b.customer_id = :customer_id
-           OR b.customer_name ILIKE :name)
-          AND b.fully_paid = FALSE
-        ORDER BY r.reminder_date DESC
-    """, {"customer_id": customer_id, "name": f"%{customer_name}%"})
-
-    # Serialize dates
-    for bill in unpaid_bills:
-        if bill.get("bill_date"):
-            bill["bill_date"] = str(bill["bill_date"])
-
-    for payment in payment_history:
-        if payment.get("payment_date"):
-            payment["payment_date"] = str(payment["payment_date"])
-
-    for reminder in reminders:
-        if reminder.get("reminder_date"):
-            reminder["reminder_date"] = str(reminder["reminder_date"])
-
-    return {
-        "customer": {
-            "name":      customer["name"],
-            "phone":     customer["phone"],
-            "area":      customer["area"],
-            "tier":      customer["tier"],
-            "shop_type": customer["shop_type"],
-            "active":    customer["active"]
-        },
-        "summary": {
-            "unpaid_bill_count":  summary["unpaid_bill_count"],
-            "total_outstanding":  float(summary["total_outstanding"] or 0),
-            "oldest_unpaid_days": summary["oldest_unpaid_days"],
-            "oldest_bill_date":   str(summary["oldest_bill_date"]) if summary["oldest_bill_date"] else None
-        },
-        "unpaid_bills":    unpaid_bills,
-        "payment_history": payment_history,
-        "reminders":       reminders
-    }
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 404:
+            return {"error": f"Customer '{name}' not found"}
+        return {"error": f"FMS API error: {e.response.status_code}"}
+    except httpx.TimeoutException:
+        return {"error": "FMS API timeout"}
+    except Exception as e:
+        return {"error": str(e)}
