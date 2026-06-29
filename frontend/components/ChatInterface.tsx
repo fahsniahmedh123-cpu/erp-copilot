@@ -52,7 +52,7 @@ export default function ChatInterface() {
     setLoading(true);
 
     try {
-      const res = await fetch("http://localhost:8000/chat", {
+      const res = await fetch(`${process.env.NEXT_PUBLIC_AI_API_URL}/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ message: text.trim() }),
@@ -76,7 +76,7 @@ export default function ChatInterface() {
         id: (Date.now() + 1).toString(),
         role: "assistant",
         content:
-          "Sorry, I could not connect to the AI service. Make sure the Python server is running on port 8000.",
+          "Sorry, I could not connect to the AI service. Please try again.",
         timestamp: new Date(),
         error: true,
       };
