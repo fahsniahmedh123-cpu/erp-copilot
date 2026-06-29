@@ -13,6 +13,7 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
 FINANCE_API_BASE_URL = os.getenv("FINANCE_API_BASE_URL", "")
 FINANCE_API_TOKEN = os.getenv("FINANCE_API_TOKEN", "")
-
+COPILOT_USERNAME = os.getenv("COPILOT_USERNAME", "copilot_service")
+COPILOT_PASSWORD = os.getenv("COPILOT_PASSWORD", "CopilotService@2026!")
 APP_ENV = os.getenv("APP_ENV", "development")
 APP_PORT = int(os.getenv("APP_PORT", "8000"))

@@ -14,11 +14,26 @@ from agent.graph import run_agent
 from db.database import test_connection
 import uvicorn
 import os
+from contextlib import asynccontextmanager
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    db_ok = test_connection()
+    print(f"[Startup] Database : {'connected' if db_ok else 'disconnected'}")
+    print(f"[Startup] AI Service: running")
+    print(f"[Startup] Docs : http://localhost:8000/docs")
+
+    yield
+
+    print("[Shutdown] ERP Copilot shutting down")
+
 
 app = FastAPI(
     title="ERP Copilot AI Service",
     description="Langraph agent  for retail and whole business intelligence",
-    version="1.0.0"
+    version="1.0.0",
+    lifespan=lifespan
 )
 
 app.add_middleware(
@@ -74,9 +89,12 @@ def chat(request: ChatRequest):
         return ChatResponse(
             response=result["response"],
             tool_used=result["tool_used"],
-            params=result["params"]
+            params=result["params"],
+            reasoning=result.get("reasoning", "")
         )
     except Exception as e: 
+        import traceback
+        traceback.print_exc()
         raise HTTPException(
             status_code=500,
             detail=f"Agent error: {str(e)}"

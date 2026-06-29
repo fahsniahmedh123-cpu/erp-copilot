@@ -18,7 +18,7 @@ from tools.call_list_today import call_list_today
 
 # LLM setup
 llm = ChatGoogleGenerativeAI(
-    model="gemini-2.5-flash",
+    model="gemini-3.1-flash-lite",
     google_api_key=GEMINI_API_KEY,
     temperature=0.1
 )
@@ -169,32 +169,78 @@ def execute_node(state: dict) -> dict:
     }
 
 # Node 3 : Respond
+def _summarize_outstanding(bills: list) -> dict:
+    """Condenses a raw bill list into a compact summary for the LLM."""
+    if not bills or not isinstance(bills, list):
+        return bills
+
+    total_amount = sum(b.get("balance_remaining", 0) for b in bills)
+    by_customer = {}
+    for b in bills:
+        name = b.get("customer_name", "Unknown")
+        if name not in by_customer:
+            by_customer[name] = {
+                "customer": name,
+                "phone": b.get("phone"),
+                "area": b.get("area"),
+                "tier": b.get("tier"),
+                "bills": 0,
+                "total_outstanding": 0,
+                "max_days_overdue": 0,
+                "overdue_reasons": set(),
+            }
+        entry = by_customer[name]
+        entry["bills"] += 1
+        entry["total_outstanding"] += b.get("balance_remaining", 0)
+        entry["max_days_overdue"] = max(entry["max_days_overdue"], b.get("days_overdue", 0))
+        if b.get("overdue_reason"):
+            entry["overdue_reasons"].add(b["overdue_reason"])
+
+    rows = sorted(by_customer.values(), key=lambda x: x["total_outstanding"], reverse=True)
+    for r in rows:
+        r["overdue_reasons"] = list(r["overdue_reasons"])
+
+    return {
+        "total_bills": len(bills),
+        "total_outstanding_lkr": round(total_amount, 2),
+        "customer_count": len(rows),
+        "customers": rows[:20],
+    }
+
+
 def respond_node(state: dict) -> dict:
     """
-    Takes the raw tool result and formats it into 
+    Takes the raw tool result and formats it into
     a clear, natural language answer for the user.
     """
     message = state["message"]
     tool = state.get("tool")
     tool_result = state.get("tool_result")
 
+    if tool == "outstanding_bills" and isinstance(tool_result, list):
+        display_data = _summarize_outstanding(tool_result)
+    else:
+        display_data = tool_result
+
     response_prompt = f"""
     The user asked: "{message}"
 
     You called the {tool} tool and got this data:
-    {json.dumps(tool_result, indent=2, default=str)}
+    {json.dumps(display_data, indent=2, default=str)}
 
-    Write a clear, helpful answer in plain English.
+    This is REAL live data from the database. Reply like a smart colleague giving a quick briefing — not a formal report.
 
     Guidelines:
-    - Be concise but complete
-    - Use LKR for all amounts
-    - Format amounts with commas (LKR 95,000)
-    - Show phone numbers when available
-    - For lists, show max 10 items then summarize
-    - If data is empty, say so clearly
-    - Highlight urgent items (bounced cheques, very old bills)
-    - End with a helpful suggestion if relevant
+    - Lead with one sentence: total count and total amount
+    - For each customer use this card format (blank line between cards):
+
+      **CUSTOMER NAME** — Area | Tier
+      📞 Phone · Bill type · LKR Amount
+      ⚠️ Status/reason · X days overdue
+
+    - Use LKR with commas (LKR 95,000)
+    - Max 10 cards, then one summary line: "...and X more totalling LKR Y"
+    - After the cards, 1-2 sentences on what needs action right now — no headers, no labels
     """
 
     response = llm.invoke([
